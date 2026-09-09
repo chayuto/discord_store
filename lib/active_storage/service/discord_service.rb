@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "discord_store"
+require "tempfile"
 
 module ActiveStorage
   class Service
@@ -37,12 +38,21 @@ module ActiveStorage
     # Redirect mode works only for blobs small enough to be a single attachment,
     # because a blob split across attachments has no single URL to redirect to.
     class DiscordService < Service
+      # What every other ActiveStorage service yields per iteration when
+      # streaming a download. Not a Discord number -- a Rails one.
+      STREAM_CHUNK_SIZE = 5 * 1024 * 1024
+
       attr_reader :client, :blobs
 
       # @param config [Hash] the storage.yml stanza, symbolized
       def initialize(**config)
         @config = config
-        @client = DiscordStore::Client.new(config: build_configuration(config))
+        # +http+ is a test seam, the same one S3Service exposes as +client+:
+        # it lets the conformance suite run the whole service against an
+        # in-memory Discord. Nothing in storage.yml sets it.
+        @client = DiscordStore::Client.new(
+          config: build_configuration(config), http: config[:http]
+        )
         @blobs = @client.blobs
         super()
       end
@@ -63,7 +73,7 @@ module ActiveStorage
       def download(key, &block)
         if block
           instrument :streaming_download, key: key do
-            @blobs.download(key, &block)
+            stream(key, &block)
           end
         else
           instrument :download, key: key do
@@ -72,6 +82,30 @@ module ActiveStorage
         end
       rescue DiscordStore::NotFoundError
         raise ActiveStorage::FileNotFoundError
+      end
+
+      # Concatenates several blobs into one.
+      #
+      # S3 and GCS compose server-side; Discord cannot, so this reads the
+      # sources and writes a new blob. It goes through a Tempfile rather than a
+      # String because the inputs are attachments and composing four of them at
+      # a 100 MiB tier would otherwise put 400 MiB on the heap.
+      #
+      # +filename+ and +disposition+ are accepted and dropped: Discord stores no
+      # per-object metadata, and this service serves downloads through the
+      # application anyway, which is where those two get applied.
+      #
+      # @return [void]
+      def compose(source_keys, destination_key, content_type: nil, **)
+        instrument :compose, key: destination_key, source_keys: source_keys do
+          Tempfile.create(["discord-store-compose", ".bin"]) do |scratch|
+            scratch.binmode
+            source_keys.each { |source_key| @blobs.download(source_key) { |bytes| scratch.write(bytes) } }
+            scratch.rewind
+            @blobs.put(destination_key, scratch,
+                       content_type: content_type || "application/octet-stream")
+          end
+        end
       end
 
       # @param key [String]
@@ -144,6 +178,22 @@ module ActiveStorage
         raise NotImplementedError,
               "a Discord-backed service cannot be public: every CDN link Discord issues " \
               "expires on its own schedule, so there is no stable public URL to publish."
+      end
+
+      # ActiveStorage's services all hand back 5 MB slices when streaming, and
+      # Rails' conformance suite asserts it exactly. Discord's chunks are sized
+      # by the guild's attachment ceiling instead -- 8 MiB to 100 MiB depending
+      # on boost tier -- which is storage geometry and no business of a caller
+      # iterating a download. Re-slice on the way out.
+      def stream(key)
+        buffer = (+"").force_encoding(Encoding::BINARY)
+
+        @blobs.download(key) do |bytes|
+          buffer << bytes
+          yield buffer.slice!(0, STREAM_CHUNK_SIZE) while buffer.bytesize >= STREAM_CHUNK_SIZE
+        end
+
+        yield buffer unless buffer.empty?
       end
 
       def build_configuration(options)

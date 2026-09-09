@@ -1,5 +1,10 @@
 # discord_store
 
+[![CI](https://github.com/chayuto/discord_store/actions/workflows/main.yml/badge.svg)](https://github.com/chayuto/discord_store/actions/workflows/main.yml)
+[![Gem Version](https://badge.fury.io/rb/discord_store.svg)](https://rubygems.org/gems/discord_store)
+[![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.1-CC342D.svg)](https://www.ruby-lang.org)
+[![Rails](https://img.shields.io/badge/rails-7.2%20%7C%208.0%20%7C%208.1-D30001.svg)](https://rubyonrails.org)
+
 Uses Discord as a database.
 
 It works. The data goes in, the data comes back out, ActiveRecord can query it,
@@ -136,6 +141,25 @@ tombstones into a database whose tombstones are stored as tombstones.
 Compaction is therefore not optional. `rake discord:compact STREAM=orders`.
 
 ---
+
+## Compatibility
+
+| | |
+|---|---|
+| Ruby | 3.1, 3.2, 3.3, 3.4 |
+| Rails | 7.2, 8.0, 8.1 — for the ActiveRecord and ActiveStorage layers |
+
+The gem itself depends on no part of Rails; the adapters are optional and load
+only if you require them. `base64` is the single runtime dependency, and only
+because it leaves the default gems in Ruby 3.4.
+
+The Rails floor is 7.2 and it is a hard one:
+`ActiveRecord::ConnectionAdapters.register` arrived in 7.2, and registering an
+adapter before that means defining a `discord_connection` factory method
+instead. Supporting both paths is possible; claiming to support both without
+running the suite against both is not.
+
+CI runs every supported combination — ten of them — on every push.
 
 ## Install
 
@@ -362,7 +386,31 @@ production a day after deploy:
 assert_equal data, @blobs.get("k")   # passes: it re-resolves
 ```
 
-`bundle exec rake` runs 131 tests. None of them touch the network.
+```sh
+bundle exec rake              # 145 tests and RuboCop, no network
+bundle exec appraisal rake    # the same, against Rails 7.2, 8.0 and 8.1
+ruby -Ilib examples/replay_demo.rb
+```
+
+### Somebody else's tests
+
+Everything above tests this library against expectations this library's author
+wrote down, which is a closed loop. So the suite also vendors
+[Rails' own ActiveStorage conformance tests][shared] verbatim and points them at
+the Discord service — the same suite Disk, S3, GCS and Azure have to pass,
+written by people who have never heard of this gem and have no stake in it
+passing.
+
+It found two real bugs on the first run. `compose` was simply missing. And
+streaming downloads were yielding one Discord chunk at a time — sized by the
+guild's attachment ceiling, 8 MiB to 100 MiB — where every other service yields
+5 MB slices and Rails asserts it exactly. That is storage geometry leaking into
+an interface, and no test written from inside this project was ever going to
+catch it.
+
+All 14 pass, with nothing skipped.
+
+[shared]: https://github.com/rails/rails/blob/v8.1.3.1/activestorage/test/service/shared_service_tests.rb
 
 ---
 

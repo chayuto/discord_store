@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/chayuto/discord_store/security/advisories/new
+    about: Report privately instead. See SECURITY.md for what is in scope.
+  - name: "\"This violates Discord's Terms of Service\""
+    url: https://github.com/chayuto/discord_store#read-this-part-first
+    about: It does. That is stated in the first paragraph of the README and is not a bug.

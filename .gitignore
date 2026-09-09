@@ -8,3 +8,8 @@
 /tmp/
 
 *.gem
+
+# A library, not an application: the lockfile is resolved fresh so that the
+# ranges in the gemspec and Gemfile are what actually get tested.
+/Gemfile.lock
+/gemfiles/*.lock

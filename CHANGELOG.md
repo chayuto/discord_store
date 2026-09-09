@@ -28,7 +28,8 @@ First release.
   re-resolves on every read, so it survives Discord's expiring signed links.
   Range reads fetch only the chunks they touch.
 - **`ActiveStorage::Service::DiscordService`** — with proxy mode as the
-  documented configuration.
+  documented configuration. Passes Rails' own `SharedServiceTests` conformance
+  suite in full, including `compose` and 5 MB streaming slices.
 - **`ActiveRecord::ConnectionAdapters::DiscordAdapter`** — a SQLite adapter that
   mirrors every write into a Discord channel and can rebuild the database from
   it. Journal modes `:sync`, `:async` and `:off`. Savepoints are refused while
@@ -44,5 +45,16 @@ First release.
   `discord:doctor`, `discord:probe`, `discord:key`.
 - **Safety** — the library refuses to make a request without an explicit
   Terms of Service acknowledgement, and reads only messages its own bot wrote.
+
+### Verified against
+
+- Ruby 3.1, 3.2, 3.3 and 3.4.
+- Rails 7.2, 8.0 and 8.1, via Appraisal. The floor is 7.2 because
+  `ActiveRecord::ConnectionAdapters.register` does not exist before it.
+- Rails' vendored ActiveStorage conformance suite, 14 cases, nothing skipped.
+
+Not verified against live Discord. The attachment ceiling, CDN `Range` support
+and real throughput are discovered at runtime rather than hardcoded, and none of
+them have been measured against a real guild.
 
 [0.1.0]: https://github.com/chayuto/discord_store/releases/tag/v0.1.0

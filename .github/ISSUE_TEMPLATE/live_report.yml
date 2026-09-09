@@ -1,0 +1,38 @@
+name: Live-Discord report
+description: You ran this against a real guild. Tell us what you saw.
+labels: [live-validation]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Three values in this library are discovered at runtime rather than
+        hardcoded, and none have been measured against live Discord. Hardcoding
+        them is how every previous library in this genre broke, so observations
+        from a real guild are worth more here than most code changes.
+
+  - type: input
+    id: chunk-ceiling
+    attributes:
+      label: Attachment ceiling
+      description: What `rake discord:probe` found, and the guild's boost tier.
+      placeholder: "tier 0, probe settled on 10485760"
+
+  - type: dropdown
+    id: range
+    attributes:
+      label: Did the CDN honour an HTTP Range request?
+      options:
+        - "Yes, returned 206 with the requested bytes"
+        - "No, returned the whole object"
+        - "Did not test"
+
+  - type: textarea
+    id: throughput
+    attributes:
+      label: Throughput
+      description: Records or bytes per second, and across how many channels.
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything that behaved differently from the fake
