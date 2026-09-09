@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "digest"
+require "set"
 require "stringio"
 
 module DiscordStore
@@ -107,6 +108,47 @@ module DiscordStore
       retire(previous) if previous
 
       manifest
+    end
+
+    # Chunks that no live manifest points at.
+    #
+    # A blob is a manifest plus its chunks, written in that order and deleted in
+    # the other. Anything that interrupts the middle -- a crash, a rate limit
+    # that outlived its retries, a delete that got halfway -- leaves chunks with
+    # nothing referring to them. They are invisible to every other method here,
+    # because every other method starts from a manifest, and they count against
+    # the guild's storage forever.
+    #
+    # Finding them means asking a question no channel scan answers well: which
+    # attachments exist that nothing references. Discord's search can answer it
+    # directly, filtering on an extension that is already public and says
+    # nothing about the contents.
+    #
+    # Costs one search page per 25 chunks and needs the MESSAGE_CONTENT intent.
+    #
+    # @param search [Search, nil] defaults to one built from this config
+    # @return [Array<Hash>] each {message_id:, channel_id:, filename:, size:}
+    # @raise [MissingIntentError] if the privileged intent is not enabled
+    def orphans(search: nil)
+      finder = search || Search.new(rest: @rest, config: @config)
+      referenced = referenced_message_ids
+
+      found = []
+      finder.each(has: "file",
+                  attachment_extension: Search::EXTENSION,
+                  channel_ids: @config.blob_channel_ids) do |message|
+        next if referenced.include?(message["id"].to_s)
+
+        Array(message["attachments"]).each do |attachment|
+          # Spilled log records share the extension and are not blob chunks.
+          next if attachment["filename"].to_s == Codec::SPILL_FILENAME
+
+          found << { message_id: message["id"].to_s, channel_id: message["channel_id"].to_s,
+                     filename: attachment["filename"].to_s, size: attachment["size"].to_i }
+        end
+      end
+
+      found
     end
 
     # @param key [String]
@@ -367,6 +409,16 @@ module DiscordStore
       end
     end
 
+    def referenced_message_ids
+      @index.warm!
+      @index.keys.each_with_object(Set.new) do |key, ids|
+        manifest = @index.get(key)
+        next if manifest.nil?
+
+        manifest.chunks.each { |chunk| ids << chunk[:message_id].to_s }
+      end
+    end
+
     def safe_delete(channel_id, message_id)
       @rest.delete_message(channel_id, message_id)
     rescue APIError
@@ -375,10 +427,13 @@ module DiscordStore
 
     # Maps blob keys to manifests.
     #
-    # Discord gives bots no search, so a lookup by key would otherwise mean
-    # scanning a channel. This scans it exactly once, at first use, and keeps the
-    # result. Manifests are one small message per blob, so the scan is a hundred
-    # blobs per request.
+    # A lookup by key would otherwise mean scanning a channel. This scans it
+    # exactly once, at first use, and keeps the result. Manifests are one small
+    # message per blob, so the scan is a hundred blobs per request.
+    #
+    # Discord's message search could answer a key lookup directly, but only if
+    # the key were stored in plaintext, and a blob key names the thing it holds.
+    # Scanning once is cheaper than telling Discord what our files are called.
     #
     # Swap in your own if you would rather the index lived in Postgres: anything
     # answering get/put/delete/keys will do.

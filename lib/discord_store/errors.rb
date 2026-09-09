@@ -89,4 +89,47 @@ module DiscordStore
   # been written by somebody else. discord_store only ever reads its own bot's
   # messages; see DiscordStore::Transport::REST#assert_own_message!
   class ForeignMessageError < Error; end
+
+  # Discord's message index had not caught up with the messages being searched
+  # for, and did not catch up within the allowed number of retries.
+  #
+  # This is not a failure so much as a statement about what search is: an index
+  # maintained asynchronously beside the messages, not the messages themselves.
+  # A write is durable the moment create_message returns; it is *findable* some
+  # time after that, and Discord does not promise when.
+  class IndexNotReadyError < Error
+    attr_reader :documents_indexed
+
+    def initialize(message = nil, documents_indexed: nil)
+      @documents_indexed = documents_indexed
+      super(message || "Discord's search index is not ready for this guild yet")
+    end
+  end
+
+  # Searching requires the MESSAGE_CONTENT privileged intent, which Discord
+  # grants per application and reviews by hand once a bot is in 100 guilds.
+  class MissingIntentError < Error
+    def initialize(message = nil)
+      super(message || <<~MSG.strip)
+        Discord refused the search request. GET /guilds/{id}/messages/search is
+        gated on the MESSAGE_CONTENT privileged intent, which is off by default
+        and has to be enabled for the application in the Developer Portal, under
+        Bot -> Privileged Gateway Intents. Past 100 guilds Discord reviews the
+        request by hand, and "I am using it as a database" is not a use case it
+        approves.
+
+        Everything else in this library works without the intent. Search is the
+        only part that needs it.
+      MSG
+    end
+  end
+
+  # An attempt to search outside the messages this bot wrote, while the
+  # own_messages_only guard is on.
+  #
+  # Search is the one endpoint in Discord's API that could turn this library
+  # into a scraper: it reads across a whole guild rather than a channel this bot
+  # was pointed at. The guard is enforced by pinning author_id to our own
+  # application, and this is what you get for trying to unpin it.
+  class SearchScopeError < Error; end
 end

@@ -18,6 +18,9 @@ require_relative "discord_store/transport/rate_limiter"
 require_relative "discord_store/transport/rest"
 require_relative "discord_store/transport/fake"
 
+# Depends on Transport::REST's constants at load time, so it comes after it.
+require_relative "discord_store/search"
+
 # Uses Discord as a database.
 #
 # It works, in the sense that the data goes in and comes back out. It is also an
@@ -93,6 +96,17 @@ module DiscordStore
     # @return [KV]
     def kv
       @kv ||= KV.new(rest: @rest, config: @config)
+    end
+
+    # Discord's message index.
+    #
+    # Not the read path -- see {Search} for why at length -- and needs the
+    # MESSAGE_CONTENT privileged intent. Exists for the queries that a channel
+    # scan answers badly, such as finding chunks whose manifest is gone.
+    #
+    # @return [Search]
+    def search
+      @search ||= Search.new(rest: @rest, config: @config)
     end
 
     # @return [GuildLimits]

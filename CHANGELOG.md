@@ -3,6 +3,40 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-09
+
+### Added
+
+- **`DiscordStore::Search`** — `client.search`, a wrapper over
+  `GET /guilds/{id}/messages/search`. Discord does have a query API; this
+  exposes it deliberately and uses it for almost nothing, because it is
+  documented to under-return, is eventually consistent, caps a query at ten
+  thousand rows, and cannot see through AES-256-GCM anyway. SQLite remains the
+  query layer. Results come back as a `Result` rather than an Array, because an
+  Array invites the `.size` that Discord says not to trust.
+- **`BlobStore#orphans`** — chunks that no live manifest points at, the residue
+  of an interrupted write or a half-finished delete. Invisible to every other
+  method, because every other method starts from a manifest. This is the query
+  that justified the interface.
+- **`rake discord:orphans`**, and a search line in `rake discord:doctor` that
+  distinguishes "no intent" from "broken".
+- **`search_retry_floor`** configuration, so an unindexed guild answering
+  `retry_after: 0` does not become a hot loop.
+
+### Fixed
+
+- A comment in `blob_store.rb` claimed "Discord gives bots no search". It does;
+  the endpoint is documented and requires the `MESSAGE_CONTENT` privileged
+  intent. The README carried a softer version of the same error.
+
+### Security
+
+- Every search pins `author_id` to this application before the request leaves,
+  and filters the response again on the way in. Searching for another author
+  raises `SearchScopeError` while `own_messages_only` is on. Search reads across
+  a guild rather than a channel it was handed, which makes it the one endpoint
+  here that could turn a storage backend into a scraper.
+
 ## [0.1.0] - 2026-09-09
 
 First release.
@@ -57,4 +91,5 @@ Not verified against live Discord. The attachment ceiling, CDN `Range` support
 and real throughput are discovered at runtime rather than hardcoded, and none of
 them have been measured against a real guild.
 
+[0.2.0]: https://github.com/chayuto/discord_store/releases/tag/v0.2.0
 [0.1.0]: https://github.com/chayuto/discord_store/releases/tag/v0.1.0

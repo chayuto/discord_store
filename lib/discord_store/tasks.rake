@@ -1,5 +1,17 @@
 # frozen_string_literal: true
 
+# Reports whether search works, without making its absence look like a failure:
+# the MESSAGE_CONTENT intent is off by default and everything except orphan
+# detection works fine without it.
+def report_search(client)
+  result = client.search.ours(limit: 1)
+  puts "search:           available#{" (guild still indexing)" if result.indexing?}"
+rescue DiscordStore::MissingIntentError
+  puts "search:           unavailable (MESSAGE_CONTENT intent off; only rake discord:orphans needs it)"
+rescue DiscordStore::IndexNotReadyError
+  puts "search:           index not ready yet for this guild"
+end
+
 namespace :discord do
   desc "Rebuild the local database from the Discord log"
   task replay: :environment do
@@ -75,6 +87,29 @@ namespace :discord do
 
     puts "attachment limit: #{client.limits.attachment_limit} bytes"
     puts "chunk size:       #{client.limits.chunk_size} bytes"
+
+    report_search(client)
+  rescue DiscordStore::Error => e
+    abort "#{e.class}: #{e.message}"
+  end
+
+  desc "Find blob chunks that no manifest points at (needs MESSAGE_CONTENT)"
+  task orphans: :environment do
+    client = DiscordStore.client
+    found = client.blobs.orphans
+
+    if found.empty?
+      puts "no orphaned chunks"
+    else
+      bytes = found.sum { |o| o[:size] }
+      puts "#{found.size} orphaned chunk(s), #{bytes} bytes:"
+      found.each { |o| puts "  #{o[:channel_id]}/#{o[:message_id]} #{o[:filename]} (#{o[:size]}b)" }
+      puts
+      puts "These are chunks whose manifest never landed or was half-deleted."
+      puts "Nothing references them and nothing else will find them."
+    end
+  rescue DiscordStore::MissingIntentError => e
+    abort e.message
   rescue DiscordStore::Error => e
     abort "#{e.class}: #{e.message}"
   end

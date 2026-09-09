@@ -182,4 +182,36 @@ class BlobStoreTest < Minitest::Test
 
     assert_match(%r{\Ahttps://cdn\.discordapp\.test/attachments/}, @blobs.url("small"))
   end
+
+  def test_orphans_finds_nothing_when_every_chunk_has_a_manifest
+    @blobs.put("a", "x" * 100)
+    @blobs.put("b", "y" * 100)
+
+    assert_empty @blobs.orphans
+  end
+
+  # A blob is a manifest plus chunks. Interrupt the middle and the chunks are
+  # invisible to every other method here, because they all start at a manifest.
+  def test_orphans_finds_a_chunk_whose_manifest_never_landed
+    @blobs.put("kept", "x" * 100)
+    channel = @client.config.blob_channel_ids.first
+    @client.rest.create_message(
+      channel,
+      content: "DS1 blob 0",
+      files: [{ filename: "0.ds1", content: "stranded", content_type: "application/octet-stream" }]
+    )
+
+    found = @blobs.orphans
+
+    assert_equal 1, found.size
+    assert_equal "0.ds1", found.first[:filename]
+    assert_equal channel, found.first[:channel_id]
+  end
+
+  # Spilled log records share the .ds1 extension and are not blob chunks.
+  def test_orphans_ignores_spilled_log_records
+    @client.log.append(stream: "big", data: { "blob" => "z" * 5000 })
+
+    assert_empty @blobs.orphans
+  end
 end

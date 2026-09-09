@@ -23,6 +23,11 @@ module DiscordStore
       global_rate_limit: 45,
       quota_timeout: 15.0,
       max_retries: 5,
+      # Discord answers 202 with retry_after 0 when it has no better estimate,
+      # and says to "retry after a short delay". This is what short means.
+      # Tests drop it so the suite exercises the retry rather than sleeping
+      # through it, which is the same reason the fake's rate limit is settable.
+      search_retry_floor: 0.5,
       open_timeout: 5.0,
       read_timeout: 30.0,
       write_timeout: 30.0,
@@ -85,7 +90,7 @@ module DiscordStore
 
     attr_accessor :global_rate_limit, :quota_timeout, :max_retries,
                   :open_timeout, :read_timeout, :write_timeout,
-                  :user_agent, :api_base, :logger
+                  :user_agent, :api_base, :logger, :search_retry_floor
 
     # Refuse to read any message not authored by +application_id+. This is the
     # line between a storage backend and a scraper, and it is enforced in code

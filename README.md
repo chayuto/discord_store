@@ -51,9 +51,16 @@ def own_message?(message)
 end
 ```
 
-There is no message search, no member enumeration, no history export, and there
-will not be. The distance between a storage backend and a scraper is exactly
-whether it can read other people's messages, and this one cannot.
+There is no member enumeration and no history export, and there will not be.
+
+Discord *does* offer message search, and this library uses it in exactly one
+place — finding its own orphaned attachments. Every search pins `author_id` to
+this application, so the request cannot come back with somebody else's messages
+in the first place, and the results are filtered again on the way in. Asking for
+another author raises rather than being honoured.
+
+The distance between a storage backend and a scraper is exactly whether it can
+read other people's messages, and this one cannot.
 
 ---
 
@@ -353,6 +360,67 @@ from the same constraint.
 a.increment  # from one process
 b.increment  # from another, no coordination
 a.value      # => 2
+```
+
+---
+
+## Discord's search API, and why reads still do not use it
+
+Discord has a query API. `GET /guilds/{id}/messages/search` takes a full-text
+`content` filter, channel and author filters, snowflake bounds, attachment
+filename and extension filters, and sorts by relevance or time. That is more of
+a query interface than a chat platform owes anybody, and it is worth being clear
+that this library's architecture is not a workaround for its absence.
+
+It is still not the read path, for four reasons that come from Discord's own
+documentation rather than from taste:
+
+1. **It is allowed to under-return.** *"Search may return slightly fewer results
+   than the limit specified"*, and clients *"should not rely on the length of
+   the messages array to paginate results"*. `total_results` may also be wrong
+   while messages are being written. An index that silently drops rows gives you
+   wrong answers, not slow ones — and a query layer that is occasionally wrong
+   is worse than no query layer, because you cannot tell which answers to doubt.
+2. **It is eventually consistent.** Fresh messages return `202` with
+   `{"code": 110000, "retry_after": n}` until indexed. There is no
+   read-your-writes.
+3. **It pages at 25 and cannot offset past 9975** — ten thousand rows per query,
+   reachable only in four hundred round trips.
+4. **Everything stored here is ciphertext.** Discord's index tokenises words;
+   AES-256-GCM output has none. Making payloads searchable would mean storing
+   them in the clear on somebody else's servers, which is a far larger
+   concession than the one on the front of this README.
+
+So it is used for exactly one thing, which a channel scan answers badly:
+
+```ruby
+client.blobs.orphans
+# => [{ message_id: "...", channel_id: "...", filename: "0.ds1", size: 8388608 }]
+```
+
+A blob is a manifest plus its chunks, written in that order. Interrupt the
+middle — a crash, a rate limit that outlived its retries — and the chunks are
+invisible to every other method here, because they all start from a manifest,
+while still counting against the guild forever. Search finds them by matching
+`.ds1`, an extension that was already public and says nothing about contents.
+
+```sh
+rake discord:orphans
+```
+
+Needs the `MESSAGE_CONTENT` privileged intent, which is off by default. Nothing
+else in the library needs it, and `rake discord:doctor` reports its absence as a
+missing capability rather than a failure.
+
+**The safety pin.** Search reads across a guild rather than a channel it was
+handed, which makes it the one endpoint here that could turn a storage backend
+into a scraper. Every search pins `author_id` to this application before the
+request leaves, so other people's messages cannot come back in the first place,
+and the response is filtered again on arrival. Asking for another author raises:
+
+```ruby
+client.search.messages(author_id: ["999..."])
+# => DiscordStore::SearchScopeError
 ```
 
 ---

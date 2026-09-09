@@ -9,14 +9,29 @@ module DiscordStore
     # The Discord REST surface this library uses, and nothing else.
     #
     # Deliberately small. Every method here exists to read or write data that
-    # this bot itself wrote. There is no message search, no member enumeration,
-    # no history export, and there will not be: the difference between a storage
-    # backend and a scraper is whether it can read other people's messages, and
-    # that difference is enforced in {#assert_own_message!} rather than in a
-    # paragraph of the README.
+    # this bot itself wrote. There is no member enumeration and no history
+    # export: the difference between a storage backend and a scraper is whether
+    # it can read other people's messages, and that difference is enforced in
+    # {#assert_own_message!} rather than in a paragraph of the README.
+    #
+    # {#search_messages} is the one endpoint here that reads across a guild
+    # rather than a channel it was handed, which makes it the obvious way to
+    # turn this library into the thing it is not. It is therefore pinned to our
+    # own author id before the request leaves, and filtered again on the way
+    # back. See DiscordStore::Search.
     class REST
       MESSAGE_PAGE_LIMIT = 100
       BULK_DELETE_LIMIT = 100
+
+      # Search pages at 25, not 100, and cannot be offset past 9975. Together
+      # those cap a single query at ten thousand results, reachable only 25 at a
+      # time -- four hundred round trips to exhaust one query.
+      SEARCH_PAGE_LIMIT = 25
+      SEARCH_OFFSET_LIMIT = 9975
+
+      # Discord answers 202 with this code when the guild is not indexed yet.
+      INDEX_NOT_READY_CODE = 110_000
+      SEARCH_INDEX_RETRIES = 5
 
       # Discord refuses to bulk-delete messages older than two weeks. Past that
       # the only route is one request per message, which is why the default
@@ -183,6 +198,53 @@ module DiscordStore
 
       # --- Guild and channel metadata ----------------------------------------
 
+      # --- Search ------------------------------------------------------------
+
+      # Searches a guild's messages.
+      #
+      # Three things about this endpoint are worth knowing before trusting it,
+      # and all three are Discord's own documentation rather than opinion:
+      #
+      #   * It is an index maintained beside the messages, not the messages. A
+      #     write is durable when create_message returns and findable some
+      #     unspecified time later; until then this answers 202.
+      #   * It is allowed to under-return. "Search may return slightly fewer
+      #     results than the limit specified", and total_results "may not be
+      #     accurate" while messages are being written. Results are a lower
+      #     bound, never a count.
+      #   * It needs the MESSAGE_CONTENT privileged intent.
+      #
+      # @param guild_id [String]
+      # @param params [Hash] query string params; array values are repeated
+      # @return [Hash] {"messages" => [Hash], "total_results" => Integer,
+      #   "indexing" => Boolean}
+      # @raise [IndexNotReadyError] the index never caught up
+      # @raise [MissingIntentError] the intent is not enabled
+      def search_messages(guild_id, **params)
+        route = "GET /guilds/#{guild_id}/messages/search"
+        attempt = 0
+
+        loop do
+          attempt += 1
+          body = search_request(guild_id, params, route)
+
+          return normalise_search(body) unless index_pending?(body)
+
+          if attempt > SEARCH_INDEX_RETRIES
+            raise IndexNotReadyError.new(
+              "#{route}: index still not ready after #{SEARCH_INDEX_RETRIES} retries",
+              documents_indexed: body["documents_indexed"]
+            )
+          end
+
+          wait = [body["retry_after"].to_f, config.search_retry_floor.to_f].max
+          log(:info) { "search index not ready for #{guild_id}; retrying in #{wait}s" }
+          sleep(wait)
+        end
+      end
+
+      # --- Guilds ------------------------------------------------------------
+
       # @return [Hash]
       def get_guild(guild_id)
         request(:get, "/guilds/#{guild_id}", route: "GET /guilds/#{guild_id}")
@@ -338,6 +400,40 @@ module DiscordStore
       def exponential_backoff(attempt)
         ceiling = [2.0**(attempt - 1), 30.0].min
         rand * ceiling
+      end
+
+      def search_request(guild_id, params, route)
+        request(:get, "/guilds/#{guild_id}/messages/search",
+                query: flatten_query(params), route: route)
+      rescue AuthError => e
+        # A 403 here is almost always the privileged intent rather than the
+        # token, and the generic message sends people to check credentials that
+        # are fine.
+        raise MissingIntentError if e.status == 403
+
+        raise
+      end
+
+      def index_pending?(body)
+        body.is_a?(Hash) && body["code"] == INDEX_NOT_READY_CODE
+      end
+
+      def normalise_search(body)
+        # messages is an array of arrays: it used to carry the surrounding
+        # context of each hit, and Discord kept the shape after dropping the
+        # context.
+        hits = Array(body["messages"]).flatten.compact
+        {
+          "messages" => hits.select { |message| own_message?(message) },
+          "total_results" => body["total_results"].to_i,
+          "indexing" => body["doing_deep_historical_index"] ? true : false
+        }
+      end
+
+      # Discord takes repeated keys for array params (author_id=1&author_id=2),
+      # which is what URI.encode_www_form does with an array value anyway.
+      def flatten_query(params)
+        params.reject { |_, value| value.nil? || (value.respond_to?(:empty?) && value.empty?) }
       end
 
       def build_url(path, query)

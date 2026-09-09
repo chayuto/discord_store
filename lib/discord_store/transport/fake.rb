@@ -36,6 +36,9 @@ module DiscordStore
       #   Permissive by default so that tests exercise logic rather than sleep;
       #   pass Discord's real per-channel window ({limit: 5, reset_after: 5.0})
       #   when the point of the test is the limiter itself.
+      SEARCH_PAGE_SIZE = 25
+      SEARCH_OFFSET_CEILING = 9975
+
       def initialize(application_id: "111111111111111111", clock: -> { Time.now },
                      rate_limit: { limit: 1000, reset_after: 0.05 })
         @application_id = application_id.to_s
@@ -47,6 +50,9 @@ module DiscordStore
         @requests = []
         @pending_rate_limits = 0
         @sequence = 0
+        @search_pending = 0
+        @search_under_returns = false
+        @search_denied = false
         @mutex = Mutex.new
       end
 
@@ -101,6 +107,32 @@ module DiscordStore
       # @return [Array<Hash>]
       def messages_in(channel_id) = @channels[channel_id.to_s]
 
+      # Makes the next +count+ searches answer 202 "index not yet available",
+      # which is what Discord does until it has indexed a guild.
+      #
+      # @return [void]
+      def delay_search_index(count: 1)
+        @search_pending = count
+      end
+
+      # Makes search return one fewer result per page than it should.
+      #
+      # Discord documents this: "search may return slightly fewer results than
+      # the limit specified". Code that paginates on the size of the returned
+      # array silently loses rows, so the fake does it too.
+      #
+      # @return [void]
+      def search_under_returns!
+        @search_under_returns = true
+      end
+
+      # Makes search answer 403, as it does without the MESSAGE_CONTENT intent.
+      #
+      # @return [void]
+      def deny_search!
+        @search_denied = true
+      end
+
       # @return [Integer] total API calls seen, for asserting on request counts
       def request_count = @requests.size
 
@@ -112,7 +144,10 @@ module DiscordStore
       def dispatch(request, uri)
         method = request.verb.to_s.upcase
         path = uri.path
-        query = URI.decode_www_form(uri.query.to_s).to_h
+        pairs = URI.decode_www_form(uri.query.to_s)
+        # .to_h keeps only the last value for a repeated key, which is exactly
+        # what array query params are, so search gets the pairs instead.
+        query = pairs.to_h
 
         case method
         when "POST"
@@ -134,14 +169,16 @@ module DiscordStore
             not_found
           end
         when "GET"
-          dispatch_get(path, query)
+          dispatch_get(path, query, pairs)
         else
           not_found
         end
       end
 
-      def dispatch_get(path, query)
+      def dispatch_get(path, query, pairs = [])
         case path
+        when %r{/guilds/(\d+)/messages/search\z}
+          search_messages(::Regexp.last_match(1), pairs)
         when %r{/channels/(\d+)/messages/(\d+)\z}
           get_message(::Regexp.last_match(1), ::Regexp.last_match(2))
         when %r{/channels/(\d+)/messages\z}
@@ -245,13 +282,141 @@ module DiscordStore
         Response.new(status: 204, headers: rate_limit_headers, body: nil)
       end
 
+      # Discord's message search, including the parts that make it unsuitable
+      # as a read path. A generous fake here would let code ship that breaks
+      # the first time the index lags or drops a row.
+      # +guild_id+ is unused: the fake holds one guild's worth of channels, and
+      # the parameter is kept so the signature matches the endpoint it models.
+      def search_messages(_guild_id, pairs)
+        return forbidden("Missing Access") if @search_denied
+
+        if @search_pending.positive?
+          @search_pending -= 1
+          return index_not_ready
+        end
+
+        params = group_params(pairs)
+        matches = search_candidates(params)
+        window = search_window(matches, params)
+
+        ok({
+             "total_results" => matches.size,
+             "doing_deep_historical_index" => false,
+             # Nested one deep: the shape Discord kept after it stopped
+             # returning the surrounding context of each hit.
+             "messages" => window.map { |message| [message] }
+           })
+      end
+
+      def search_candidates(params)
+        all = @channels.flat_map { |channel_id, messages| messages.map { |m| [channel_id, m] } }
+
+        all.select { |channel_id, message| search_match?(channel_id, message, params) }
+           .map { |_, message| message }
+           .sort_by { |message| -message["id"].to_i }
+      end
+
+      def search_match?(channel_id, message, params)
+        search_scope_match?(channel_id, message, params) &&
+          search_bounds_match?(message, params) &&
+          search_body_match?(message, params)
+      end
+
+      def search_scope_match?(channel_id, message, params)
+        authors = params["author_id"]
+        channels = params["channel_id"]
+
+        return false if authors.any? && !authors.include?(message.dig("author", "id"))
+        return false if channels.any? && !channels.include?(channel_id)
+
+        true
+      end
+
+      def search_bounds_match?(message, params)
+        id = message["id"].to_i
+        min = params["min_id"].first
+        max = params["max_id"].first
+
+        return false if min && id <= min.to_i
+        return false if max && id >= max.to_i
+
+        true
+      end
+
+      def search_body_match?(message, params)
+        content = params["content"]
+
+        return false if content.any? && !search_content_match?(message, content)
+        return false if params["has"].include?("file") && Array(message["attachments"]).empty?
+
+        search_attachment_match?(message, params)
+      end
+
+      def search_content_match?(message, needles)
+        haystack = message["content"].to_s.downcase
+        needles.all? { |needle| haystack.include?(needle.to_s.downcase) }
+      end
+
+      def search_attachment_match?(message, params)
+        extensions = params["attachment_extension"]
+        filenames = params["attachment_filename"]
+        return true if extensions.empty? && filenames.empty?
+
+        names = Array(message["attachments"]).map { |a| a["filename"].to_s }
+        return false if extensions.any? && names.none? { |n| extensions.include?(n.split(".").last) }
+        return false if filenames.any? && names.none? { |n| filenames.include?(n) }
+
+        true
+      end
+
+      def search_window(matches, params)
+        limit = (params["limit"].first || SEARCH_PAGE_SIZE).to_i.clamp(1, SEARCH_PAGE_SIZE)
+        offset = (params["offset"].first || 0).to_i
+        return [] if offset > SEARCH_OFFSET_CEILING
+
+        window = matches.slice(offset, limit) || []
+        # "Search may return slightly fewer results than the limit specified."
+        window = window[0...-1] if @search_under_returns && window.size > 1
+        window
+      end
+
+      def group_params(pairs)
+        grouped = Hash.new { |hash, key| hash[key] = [] }
+        pairs.each { |key, value| grouped[key] << value }
+        grouped
+      end
+
+      def index_not_ready
+        Response.new(
+          status: 202,
+          headers: rate_limit_headers.merge("content-type" => "application/json"),
+          body: JSON.generate({
+                                "message" => "Index not yet available. Try again later",
+                                "code" => 110_000,
+                                "documents_indexed" => 0,
+                                "retry_after" => 0
+                              })
+        )
+      end
+
+      def forbidden(message)
+        Response.new(
+          status: 403,
+          headers: rate_limit_headers.merge("content-type" => "application/json"),
+          body: JSON.generate({ "message" => message, "code" => 50_001 })
+        )
+      end
+
       def cdn_response(uri)
         segments = uri.path.split("/").reject(&:empty?)
         attachment_id = segments[2]
         record = @attachments[attachment_id]
         return not_found unless record
 
-        query = URI.decode_www_form(uri.query.to_s).to_h
+        pairs = URI.decode_www_form(uri.query.to_s)
+        # .to_h keeps only the last value for a repeated key, which is exactly
+        # what array query params are, so search gets the pairs instead.
+        query = pairs.to_h
         expires_at = query["ex"].to_s.to_i(16)
 
         # The whole point of the fake: an expired link 404s, exactly as Discord's

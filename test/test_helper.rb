@@ -14,6 +14,10 @@ module DiscordStore
     # limiter opt into it; everything else would just sleep.
     REAL_CHANNEL_LIMIT = { limit: 5, reset_after: 5.0 }.freeze
 
+    # Discord's own "short delay" for an unindexed guild. Tests about the
+    # retry itself want the logic, not the wait.
+    REAL_SEARCH_RETRY_FLOOR = 0.5
+
     def build_fake(clock: nil, rate_limit: nil)
       options = {}
       options[:clock] = clock if clock
@@ -33,6 +37,7 @@ module DiscordStore
         # against the same channel must be handed the same key, or they fail
         # for a reason that has nothing to do with what they are checking.
         config.secret_key = (@test_secret_key ||= Cipher.generate_key)
+        config.search_retry_floor = 0.0
         config.log_channel_ids = %w[1001]
         config.document_channel_id = "2001"
         config.blob_channel_ids = %w[3001]
