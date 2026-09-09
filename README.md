@@ -168,6 +168,11 @@ CI runs every supported combination — ten of them — on every push.
 gem "discord_store"
 ```
 
+```sh
+gem install discord_store   # no Bundler, no Rails: the log and blob store
+                            # work on their own
+```
+
 The version number is an honest 0. Three values in here are discovered at
 runtime rather than hardcoded — the real attachment ceiling, whether the CDN
 honours HTTP `Range`, and sharded throughput — and none of them has been
