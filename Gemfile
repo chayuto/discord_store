@@ -7,7 +7,10 @@ gemspec
 gem "rake", "~> 13.0"
 
 group :test do
-  gem "minitest", "~> 5.20"
+  # Floated rather than pinned to a major: the suite passes on both 5 and 6, and
+  # with no committed lockfile CI resolves the newest, which makes every run a
+  # compatibility check instead of a Dependabot pull request every six months.
+  gem "minitest", ">= 5.20"
   gem "sqlite3", "~> 2.0"
 end
 
