@@ -7,7 +7,7 @@ gemspec
 gem "rake", "~> 13.0"
 
 group :test do
-  gem "minitest", "~> 5.20"
+  gem "minitest", "~> 6.0"
   gem "sqlite3", "~> 2.0"
 end
 
