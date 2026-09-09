@@ -1,7 +1,6 @@
 # discord_store
 
 [![CI](https://github.com/chayuto/discord_store/actions/workflows/main.yml/badge.svg)](https://github.com/chayuto/discord_store/actions/workflows/main.yml)
-[![Gem Version](https://badge.fury.io/rb/discord_store.svg)](https://rubygems.org/gems/discord_store)
 [![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.1-CC342D.svg)](https://www.ruby-lang.org)
 [![Rails](https://img.shields.io/badge/rails-7.2%20%7C%208.0%20%7C%208.1-D30001.svg)](https://rubyonrails.org)
 
@@ -163,9 +162,13 @@ CI runs every supported combination — ten of them — on every push.
 
 ## Install
 
+Not on RubyGems yet — the three runtime-discovered numbers below have never been
+measured against a real guild, and releasing before that would be publishing a
+claim rather than a result. Install from git:
+
 ```ruby
 # Gemfile
-gem "discord_store"
+gem "discord_store", github: "chayuto/discord_store"
 ```
 
 Create a bot, invite it to a server you own with **Send Messages**, **Read
