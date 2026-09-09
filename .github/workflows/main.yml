@@ -30,6 +30,33 @@ jobs:
       # conformance tests, runs against an in-memory Discord.
       - run: bundle exec rake test
 
+  gemfiles:
+    name: Appraisal gemfiles current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      # The test matrix runs with BUNDLE_GEMFILE=gemfiles/*.gemfile. Those files
+      # are generated from the root Gemfile and committed, so a change to the
+      # root Gemfile that is not regenerated gets tested against the *old* pins
+      # and reports a green that means nothing. A Dependabot bundler bump does
+      # exactly that: it edits Gemfile and cannot know gemfiles/ exists.
+      #
+      # Regenerate and fail if anything moved.
+      - run: bundle exec appraisal generate
+      - name: Check gemfiles/ is in sync with Gemfile
+        run: |
+          if ! git diff --quiet -- gemfiles/; then
+            echo "::error::gemfiles/ is stale. Run 'bundle exec appraisal generate' and commit the result."
+            git diff -- gemfiles/
+            exit 1
+          fi
+          echo "gemfiles/ matches the root Gemfile"
+
   lint:
     name: RuboCop
     runs-on: ubuntu-latest

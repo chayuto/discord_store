@@ -11,7 +11,6 @@ require "active_storage/errors"
 $LOAD_PATH.unshift File.join(Gem.loaded_specs.fetch("activestorage").full_gem_path, "app", "models")
 require "active_storage/filename"
 require "active_support/test_case"
-require "active_support/testing/autorun"
 require "active_storage/service/discord_service"
 require "support/shared_service_tests"
 
